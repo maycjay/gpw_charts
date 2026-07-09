@@ -27,7 +27,7 @@ SECURITY NOTE:
     CREATE ROLE dashboard_ro WITH LOGIN PASSWORD 'choose-a-strong-password';
     GRANT CONNECT ON DATABASE market TO dashboard_ro;
     GRANT USAGE ON SCHEMA public TO dashboard_ro;
-    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses, v_signals, stock_list TO dashboard_ro;
+    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses, v_signals, stock_list, wolumen_by_rok TO dashboard_ro;
 
   Never commit the secrets.toml file to git -- Streamlit Cloud stores it
   separately from your repo.
@@ -67,7 +67,14 @@ def get_engine():
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_ticker_list() -> pd.DataFrame:
-    q = "SELECT stock FROM stock_list ORDER BY stock"
+    # Orders by traded volume (wolumen_by_rok.sum), highest first; stocks
+    # with no volume row (e.g. not yet ranked) sort last.
+    q = """
+        SELECT sl.stock
+        FROM stock_list sl
+        LEFT JOIN wolumen_by_rok wbr ON wbr.nazwa = sl.stock
+        ORDER BY wbr.rank NULLS LAST
+    """
     with get_engine().connect() as conn:
         return pd.read_sql(text(q), conn)
 
