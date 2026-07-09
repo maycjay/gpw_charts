@@ -27,7 +27,7 @@ SECURITY NOTE:
     CREATE ROLE dashboard_ro WITH LOGIN PASSWORD 'choose-a-strong-password';
     GRANT CONNECT ON DATABASE market TO dashboard_ro;
     GRANT USAGE ON SCHEMA public TO dashboard_ro;
-    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses TO dashboard_ro;
+    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses, v_signals TO dashboard_ro;
 
   Never commit the secrets.toml file to git -- Streamlit Cloud stores it
   separately from your repo.
@@ -69,7 +69,7 @@ def get_engine():
 def get_ticker_list() -> pd.DataFrame:
     q = """
         SELECT kod_isin, nazwa
-        FROM p1_mv_sma
+        FROM v_signals
         GROUP BY kod_isin, nazwa
         ORDER BY nazwa
     """
@@ -78,20 +78,19 @@ def get_ticker_list() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)  # 5 min cache -- adjust to taste
-def get_sma_data(kod_isin: str, start: date, end: date) -> pd.DataFrame:
+def get_sma_data(nazwa: str, start: date, end: date) -> pd.DataFrame:
+    # Mirrors chart.sql: filters on nazwa (name) rather than kod_isin.
     q = """
-        SELECT date, close, sma_50, sma_200
-        FROM p1_mv_sma
-        WHERE kod_isin = :kod_isin
+        SELECT date, close, sma_50, sma_200, sma_50 / sma_200 AS sma_ratio
+        FROM v_signals
+        WHERE nazwa = :nazwa
           AND date BETWEEN :start AND :end
         ORDER BY date
     """
     with get_engine().connect() as conn:
         df = pd.read_sql(
-            text(q), conn, params={"kod_isin": kod_isin, "start": start, "end": end}
+            text(q), conn, params={"nazwa": nazwa, "start": start, "end": end}
         )
-    if not df.empty:
-        df["sma_ratio"] = (df["close"] / df["sma_200"]) * 100
     return df
 
 
@@ -101,19 +100,20 @@ def get_sma_data(kod_isin: str, start: date, end: date) -> pd.DataFrame:
 st.sidebar.header("Controls")
 
 tickers = get_ticker_list()
-default_idx = int(tickers.index[tickers["kod_isin"] == "PLPZU0000011"][0]) if (
-    tickers["kod_isin"] == "PLPZU0000011"
+DEFAULT_NAZWA = "KGHM"
+default_idx = int(tickers.index[tickers["nazwa"] == DEFAULT_NAZWA][0]) if (
+    tickers["nazwa"] == DEFAULT_NAZWA
 ).any() else 0
 
-label_map = {row.kod_isin: f"{row.nazwa} ({row.kod_isin})" for row in tickers.itertuples()}
-selected_isin = st.sidebar.selectbox(
+label_map = {row.nazwa: f"{row.nazwa} ({row.kod_isin})" for row in tickers.itertuples()}
+selected_nazwa = st.sidebar.selectbox(
     "Ticker",
-    options=tickers["kod_isin"],
-    format_func=lambda isin: label_map.get(isin, isin),
+    options=tickers["nazwa"],
+    format_func=lambda n: label_map.get(n, n),
     index=default_idx,
 )
 
-default_start = date.today() - timedelta(days=500)
+default_start = date.today() - timedelta(days=365)
 start_date = st.sidebar.date_input("Start date", value=default_start)
 end_date = st.sidebar.date_input("End date", value=date.today())
 
@@ -127,8 +127,8 @@ st.sidebar.caption("Data auto-refreshes every 5 minutes. Use the button above to
 # ---------------------------------------------------------------------------
 # Main chart
 # ---------------------------------------------------------------------------
-df = get_sma_data(selected_isin, start_date, end_date)
-selected_name = label_map.get(selected_isin, selected_isin)
+df = get_sma_data(selected_nazwa, start_date, end_date)
+selected_name = label_map.get(selected_nazwa, selected_nazwa)
 
 st.title(f"{selected_name}")
 
@@ -160,21 +160,19 @@ else:
         legend=dict(orientation="h", yanchor="bottom", y=-0.2),
         yaxis=dict(title="Price (PLN)", side="left"),
         yaxis2=dict(
-            title="close / sma_200 (%)",
+            title="sma_50 / sma_200",
             overlaying="y",
             side="right",
             tickformat=".0%",
-            ticksuffix="",
         ),
         margin=dict(t=30, b=10),
     )
-    # sma_ratio is computed as a plain percentage number (e.g. 116.3);
-    # convert to fraction so the percent tick format above reads correctly.
-    fig.data[3].y = df["sma_ratio"] / 100
+    # sma_ratio comes straight from SQL as sma_50/sma_200 (~1.0 = 100%),
+    # which is already the fraction Plotly's percent tick format expects.
 
     st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("Raw data"):
         st.dataframe(df, use_container_width=True)
 
-st.caption("Source: Neon Postgres `market` DB · view `p1_mv_sma`")
+st.caption("Source: Neon Postgres `market` DB · view `v_signals`")
