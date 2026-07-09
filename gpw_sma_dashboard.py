@@ -27,7 +27,7 @@ SECURITY NOTE:
     CREATE ROLE dashboard_ro WITH LOGIN PASSWORD 'choose-a-strong-password';
     GRANT CONNECT ON DATABASE market TO dashboard_ro;
     GRANT USAGE ON SCHEMA public TO dashboard_ro;
-    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses, v_signals TO dashboard_ro;
+    GRANT SELECT ON gpw_notowania, p1_mv_sma, p1_mv_crosses, v_signals, stock_list TO dashboard_ro;
 
   Never commit the secrets.toml file to git -- Streamlit Cloud stores it
   separately from your repo.
@@ -67,12 +67,7 @@ def get_engine():
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_ticker_list() -> pd.DataFrame:
-    q = """
-        SELECT kod_isin, nazwa
-        FROM v_signals
-        GROUP BY kod_isin, nazwa
-        ORDER BY nazwa
-    """
+    q = "SELECT stock FROM stock_list ORDER BY stock"
     with get_engine().connect() as conn:
         return pd.read_sql(text(q), conn)
 
@@ -101,15 +96,13 @@ st.sidebar.header("Controls")
 
 tickers = get_ticker_list()
 DEFAULT_NAZWA = "KGHM"
-default_idx = int(tickers.index[tickers["nazwa"] == DEFAULT_NAZWA][0]) if (
-    tickers["nazwa"] == DEFAULT_NAZWA
+default_idx = int(tickers.index[tickers["stock"] == DEFAULT_NAZWA][0]) if (
+    tickers["stock"] == DEFAULT_NAZWA
 ).any() else 0
 
-label_map = {row.nazwa: f"{row.nazwa} ({row.kod_isin})" for row in tickers.itertuples()}
 selected_nazwa = st.sidebar.selectbox(
     "Ticker",
-    options=tickers["nazwa"],
-    format_func=lambda n: label_map.get(n, n),
+    options=tickers["stock"],
     index=default_idx,
 )
 
@@ -128,9 +121,8 @@ st.sidebar.caption("Data auto-refreshes every 5 minutes. Use the button above to
 # Main chart
 # ---------------------------------------------------------------------------
 df = get_sma_data(selected_nazwa, start_date, end_date)
-selected_name = label_map.get(selected_nazwa, selected_nazwa)
 
-st.title(f"{selected_name}")
+st.title(f"{selected_nazwa}")
 
 if df.empty:
     st.warning("No data for this ticker / date range.")
